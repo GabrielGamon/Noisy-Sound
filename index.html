@@ -18,10 +18,6 @@
 <div id="app">
   <header class="top">
     <h1 id="screen-title">Início</h1>
-    <button class="icon-btn" id="import-btn" aria-label="Adicionar músicas">
-      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-    </button>
-    <input type="file" id="file-input" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg,.opus" multiple hidden>
   </header>
 
   <main id="view"></main>
@@ -40,6 +36,7 @@
 
   <nav class="tabs">
     <button data-tab="home" class="active"><svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v9h-5v-6H9v6H4z"/></svg><span>Início</span></button>
+    <button data-tab="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg><span>Pesquisar</span></button>
     <button data-tab="library"><svg viewBox="0 0 24 24"><path d="M5 4v16M10 4v16M15 4l5 15.5"/></svg><span>Biblioteca</span></button>
   </nav>
 </div>
@@ -57,9 +54,6 @@
       <div><div class="t" id="player-title"></div><div class="a" id="player-artist"></div></div>
       <button class="icon-btn like" id="player-like" aria-label="Curtir"></button>
     </div>
-    <a class="via" id="player-via" target="_blank" rel="noopener" hidden></a>
-    <div class="sc-tap-hint">Toque no play abaixo para começar</div>
-    <div id="sc-host" class="sc-host"></div>
     <div class="wave" id="wave"><canvas id="wave-canvas"></canvas></div>
     <div class="times"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div>
     <div class="controls">
@@ -76,10 +70,9 @@
 <div id="toast" class="toast"></div>
 
 <audio id="audio" preload="auto" playsinline></audio>
-<div id="sc-meta" class="sc-meta" aria-hidden="true"></div>
 <script src="db.js"></script>
 <script src="player.js"></script>
-<script src="tags.js"></script>
+<script src="catalog.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

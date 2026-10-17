@@ -1,4 +1,4 @@
-// Noisy Sound: app de música pessoal. Tudo roda no aparelho, sem servidor.
+// Noisy Sound: app de música. O catálogo vem do Audius; curtidas e playlists ficam no aparelho.
 const $ = (s, el = document) => el.querySelector(s);
 
 const ICON = {
@@ -11,27 +11,32 @@ const ICON = {
   shuffle: '<svg viewBox="0 0 24 24"><path d="M3 7h3c4 0 6 10 10 10h4M3 17h3c1.6 0 2.8-1.6 3.9-3.5M14 9.5C15 8 16 7 18 7h2M17 4l3 3-3 3M17 14l3 3-3 3"/></svg>',
   next: '<svg viewBox="0 0 24 24"><path d="M4 7h11M4 12h11M4 17h7M17 14l4 3-4 3z"/></svg>',
   list: '<svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10M18 15v6M15 18h6"/></svg>',
-  edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>',
-  trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
   minus: '<svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>',
   chevron: '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>',
-  cloud: '<svg viewBox="0 0 24 24"><path d="M7 18h10.5a4 4 0 00.6-7.95A6 6 0 006.4 9.2 4.5 4.5 0 007 18z"/></svg>',
-  file: '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5M10 17a2 2 0 100-4 2 2 0 000 4zM12 15V10l3 1"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
+  search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>',
+  user: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
 };
 
 const state = {
   tracks: [], playlists: [], recents: [],
+  lists: new Map(), loading: new Set(), failed: new Set(), query: '',
   queue: [], order: [], idx: -1, context: '',
   shuffle: false, repeat: 'off',
   tab: 'home', route: null, libFilter: 'songs',
 };
-const urls = new Map(); // id -> object URL da capa
+const urls = new Map(); // id -> URL da capa
 
 // ---------- utilidades ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
 const fmt = (s) => { if (!isFinite(s)) return '0:00'; s = Math.floor(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
-const byId = (id) => state.tracks.find((t) => t.id === id);
+const cache = new Map(); // id -> faixa (todas as que já apareceram nesta sessão ou foram salvas)
+const byId = (id) => cache.get(id);
+function remember(list) { return list.map((t) => { const old = cache.get(t.id); if (old) return Object.assign(old, { ...t, liked: old.liked, likedAt: old.likedAt, hue: old.hue }); cache.set(t.id, t); if (t.artUrl) urls.set(t.id, t.artUrl); return t; }); }
+// Guarda a faixa no aparelho (para curtidas, playlists e recentes funcionarem sem buscar de novo).
+function keep(t) { if (!state.tracks.includes(t)) state.tracks.push(t); DB.put('tracks', t); }
 const hashHue = (str) => { let h = 0; for (const c of str) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; };
 const sortTitle = (a, b) => a.title.localeCompare(b.title, 'pt-BR');
 
@@ -58,124 +63,41 @@ function playlistCover(p) {
 
 // ---------- carga inicial ----------
 async function load() {
-  state.tracks = (await DB.all('tracks')) || [];
+  state.tracks = ((await DB.all('tracks')) || []).filter((t) => t.source === 'audius');
+  remember(state.tracks);
   state.playlists = ((await DB.all('playlists')) || []).sort((a, b) => a.created - b.created);
-  state.recents = (await DB.get('kv', 'recents')) || [];
+  state.recents = ((await DB.get('kv', 'recents')) || []).filter((id) => cache.has(id));
   const s = (await DB.get('kv', 'settings')) || {};
   state.shuffle = !!s.shuffle; state.repeat = s.repeat || 'off';
-  for (const t of state.tracks) if (t.artUrl) urls.set(t.id, t.artUrl);
-  await Promise.all(state.tracks.filter((t) => t.hasCover).map(async (t) => {
-    const b = await DB.get('blobs', 'cover:' + t.id);
-    if (b) urls.set(t.id, URL.createObjectURL(b));
-  }));
   navigator.storage?.persist?.();
   render(); syncControls();
 }
 const saveSettings = () => DB.put('kv', { shuffle: state.shuffle, repeat: state.repeat }, 'settings');
 
-// ---------- importar músicas ----------
-$('#import-btn').onclick = () => addMenu();
-
-function addMenu() {
-  showSheet(`<div class="sheet-title">Adicionar músicas</div>
-    <button class="opt" data-opt="files">${ICON.file} Arquivos do iPhone</button>
-    <button class="opt" data-opt="sc">${ICON.cloud} Link do SoundCloud</button>`);
-  $('#sheet-card').onclick = (e) => {
-    const o = e.target.closest('[data-opt]')?.dataset.opt;
-    if (o === 'files') { hideSheet(); $('#file-input').click(); }
-    if (o === 'sc') scSheet();
-  };
+// ---------- listas que vêm do catálogo ----------
+// Contextos remotos: "trend", "genre:<nome>", "q:<texto>", "artist:<id>:<nome>"
+const isRemote = (ctx) => /^(trend|genre|q|artist):?/.test(ctx);
+function fetchList(ctx) {
+  const [kind, ...rest] = ctx.split(':'); const arg = decodeURIComponent(rest[0] || '');
+  if (kind === 'trend') return Catalog.trending(null, 50);
+  if (kind === 'genre') { const g = GENRES.find((x) => x.name === arg); return g?.genre ? Catalog.trending(g.genre, 50) : Catalog.search(g?.q || arg, 50); }
+  if (kind === 'q') return Catalog.search(arg, 40);
+  if (kind === 'artist') return Catalog.artistTracks(arg, 50);
+  return Promise.resolve([]);
 }
-
-function scSheet() {
-  showSheet(`<div class="sheet-title">Adicionar do SoundCloud</div>
-    <div class="a" style="padding:0 10px;white-space:normal">No SoundCloud, toque em Compartilhar → Copiar link, numa música ou playlist, e cole aqui.</div>
-    <div style="padding:0 2px"><input class="field" id="sc-url" type="url" inputmode="url" placeholder="https://soundcloud.com/..." autocomplete="off" enterkeyhint="done"></div>
-    <div class="row-btns"><button class="btn ghost" data-opt="paste">Colar</button><button class="btn" data-opt="ok">Adicionar</button></div>`);
-  const go = () => { const u = $('#sc-url').value.trim(); if (u) addFromSoundCloud(u); else $('#sc-url').focus(); };
-  $('#sc-url').onkeydown = (e) => { if (e.key === 'Enter') go(); };
-  $('#sheet-card').onclick = async (e) => {
-    const o = e.target.closest('[data-opt]')?.dataset.opt;
-    if (o === 'ok') go();
-    if (o === 'paste') { try { $('#sc-url').value = (await navigator.clipboard.readText()).trim(); } catch { $('#sc-url').focus(); } }
-  };
+async function ensureList(ctx) {
+  if (state.lists.has(ctx) || state.loading.has(ctx)) return;
+  state.loading.add(ctx); state.failed.delete(ctx);
+  try { state.lists.set(ctx, remember(await fetchList(ctx))); }
+  catch (err) { console.error(err); state.failed.add(ctx); }
+  state.loading.delete(ctx);
+  render(true);
 }
-
-const SC_LINK = /^https?:\/\/((www\.|m\.)?soundcloud\.com|on\.soundcloud\.com|soundcloud\.app\.goo\.gl)\//i;
-async function addFromSoundCloud(raw) {
-  const url = (raw.match(/https?:\/\/\S+/) || [raw])[0].replace(/\?.*$/, '').replace('://m.soundcloud.com', '://soundcloud.com');
-  if (!SC_LINK.test(url)) return toast('Esse link não é do SoundCloud');
-  showSheet(`<div class="sheet-title">Buscando no SoundCloud…</div><div class="progress-import" style="margin:10px"><span style="width:35%"></span></div>`, { locked: true });
-  let sounds = [];
-  try { sounds = await scResolve(url); } catch (err) { console.error(err); }
-  if (!sounds.length) { hideSheet(true); return toast('Não consegui abrir esse link'); }
-  let added = 0;
-  for (const s of sounds) {
-    const link = s.permalink_url || url;
-    if (state.tracks.some((t) => t.url === link)) continue;
-    const t = {
-      id: uid(), source: 'sc', url: link, title: s.title, artist: s.user?.username || 'SoundCloud',
-      album: '', duration: (s.duration || 0) / 1000, peaks: null, added: Date.now() - added, liked: false,
-      artUrl: (s.artwork_url || s.user?.avatar_url || '').replace('-large.', '-t500x500.') || null,
-      preview: s.policy === 'SNIP', hasCover: false, hue: null,
-    };
-    if (t.artUrl) { urls.set(t.id, t.artUrl); t.hue = await hueFromImage(t.artUrl); }
-    if (t.hue == null) t.hue = hashHue(t.artist + t.title);
-    if (s.waveform_url) t.peaks = await scPeaks(s.waveform_url);
-    await DB.put('tracks', t); state.tracks.push(t); added++;
-  }
-  hideSheet(true);
-  toast(added ? (added === 1 ? '1 música adicionada' : `${added} músicas adicionadas`) : 'Essas músicas já estão no app');
-  render();
-}
-
-async function scPeaks(waveUrl) {
-  try {
-    const r = await fetch(waveUrl.replace(/\.png$/, '.json')); if (!r.ok) return null;
-    const { samples } = await r.json(); if (!samples?.length) return null;
-    const n = 120, step = samples.length / n, out = [];
-    for (let i = 0; i < n; i++) out.push(samples[Math.floor(i * step)]);
-    const max = Math.max(...out, 1);
-    return out.map((v) => +(v / max).toFixed(3));
-  } catch { return null; }
-}
-$('#file-input').onchange = async (e) => {
-  const files = [...e.target.files]; e.target.value = '';
-  if (files.length) importFiles(files);
-};
-
-function durationOf(file) {
-  return new Promise((resolve) => {
-    const a = new Audio(); const u = URL.createObjectURL(file);
-    const done = (d) => { URL.revokeObjectURL(u); resolve(d); };
-    a.preload = 'metadata';
-    a.onloadedmetadata = () => done(a.duration);
-    a.onerror = () => done(0);
-    setTimeout(() => done(0), 8000);
-    a.src = u;
-  });
-}
-
-let actx;
-async function peaksOf(file, n = 120) {
-  if (file.size > 60e6) return null;
-  try {
-    actx ||= new (window.AudioContext || window.webkitAudioContext)();
-    const buf = await new Promise((res, rej) => {
-      file.arrayBuffer().then((ab) => {
-        const p = actx.decodeAudioData(ab, res, rej);
-        if (p && p.then) p.then(res, rej);
-      }, rej);
-    });
-    const ch = buf.getChannelData(0); const step = Math.floor(ch.length / n); const out = [];
-    for (let i = 0; i < n; i++) {
-      let sum = 0; const start = i * step;
-      for (let j = 0; j < step; j += 16) sum += ch[start + j] * ch[start + j];
-      out.push(Math.sqrt(sum / (step / 16)));
-    }
-    const max = Math.max(...out, 0.0001);
-    return out.map((v) => +(v / max).toFixed(3));
-  } catch { return null; }
+function listState(ctx) {
+  if (state.lists.has(ctx)) return null;
+  if (!state.failed.has(ctx)) ensureList(ctx);
+  if (state.failed.has(ctx)) return `<div class="empty"><p>Não consegui carregar as músicas. Confira a internet.</p><button class="btn ghost" data-retry="${esc(ctx)}">Tentar de novo</button></div>`;
+  return `<div class="loading"><span></span><span></span><span></span></div>`;
 }
 
 function hueFromImage(src) {
@@ -206,47 +128,6 @@ function hueFromImage(src) {
   });
 }
 
-function parseName(name) {
-  const base = name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
-  const m = base.match(/^(.+?)\s+[-–]\s+(.+)$/);
-  return m ? { artist: m[1], title: m[2] } : { title: base };
-}
-
-async function importFiles(files) {
-  const audioFiles = files.filter((f) => f.type.startsWith('audio/') || /\.(mp3|m4a|aac|wav|flac|ogg|opus)$/i.test(f.name));
-  if (!audioFiles.length) return toast('Nenhum arquivo de áudio encontrado');
-  let n = 0;
-  showSheet(`<div class="sheet-title">Adicionando músicas</div><div class="a" style="padding:0 10px" id="imp-label">0 de ${audioFiles.length}</div><div class="progress-import" style="margin:10px"><span id="imp-bar"></span></div>`, { locked: true });
-  for (const f of audioFiles) {
-    try {
-      const id = uid();
-      const tags = await Tags.read(f).catch(() => ({}));
-      const fromName = parseName(f.name);
-      const [duration, peaks] = await Promise.all([durationOf(f), peaksOf(f)]);
-      const t = {
-        id, title: tags.title || fromName.title, artist: tags.artist || fromName.artist || 'Artista desconhecido',
-        album: tags.album || '', duration, peaks, added: Date.now(), liked: false,
-        type: f.type || 'audio/mpeg', hasCover: false, hue: null,
-      };
-      if (tags.cover && tags.cover.size > 100) {
-        await DB.put('blobs', tags.cover, 'cover:' + id);
-        t.hasCover = true; t.hue = await hueFromImage(tags.cover);
-        urls.set(id, URL.createObjectURL(tags.cover));
-      }
-      if (t.hue == null) t.hue = hashHue(t.artist + t.title);
-      await DB.put('blobs', f, 'audio:' + id);
-      await DB.put('tracks', t);
-      state.tracks.push(t);
-    } catch (err) { console.error(err); }
-    n++;
-    const lbl = $('#imp-label'), bar = $('#imp-bar');
-    if (lbl) lbl.textContent = `${n} de ${audioFiles.length}`;
-    if (bar) bar.style.width = (n / audioFiles.length) * 100 + '%';
-  }
-  hideSheet(true);
-  toast(n === 1 ? '1 música adicionada' : `${n} músicas adicionadas`);
-  render();
-}
 
 // ---------- navegação ----------
 document.querySelectorAll('.tabs button').forEach((b) => {
@@ -258,128 +139,146 @@ document.querySelectorAll('.tabs button').forEach((b) => {
 function go(route) { state.route = route; render(); window.scrollTo(0, 0); }
 function back() { state.route = null; render(); }
 
-const TITLES = { home: 'Início', library: 'Biblioteca' };
+const TITLES = { home: 'Início', search: 'Pesquisar', library: 'Biblioteca' };
 
-function render() {
+// soft = recarregar só o conteúdo, sem perder o que está sendo digitado na busca
+function render(soft) {
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab));
   $('#screen-title').textContent = state.route ? '' : TITLES[state.tab];
   const v = $('#view');
-  if (state.route) v.innerHTML = renderCollection(state.route);
-  else if (!state.tracks.length) v.innerHTML = renderEmpty();
-  else v.innerHTML = { home: renderHome, library: renderLibrary }[state.tab]();
+  if (state.route) { v.innerHTML = renderCollection(state.route); return; }
+  if (state.tab === 'search') {
+    if (!soft || !$('#q')) { v.innerHTML = renderSearch(); bindSearch(); }
+    $('#results').innerHTML = renderResults();
+    return;
+  }
+  v.innerHTML = { home: renderHome, library: renderLibrary }[state.tab]();
 }
 
-function renderEmpty() {
-  return `<div class="empty">
-    <div class="big">${ICON.music}</div>
-    <h3>Sua biblioteca está vazia</h3>
-    <p>Adicione arquivos do iPhone ou do iCloud Drive, ou cole links de músicas e playlists do SoundCloud.</p>
-    <div style="display:flex;flex-direction:column;gap:10px;align-items:center">
-      <button class="btn" data-act="import">${ICON.file} Arquivos do iPhone</button>
-      <button class="btn ghost" data-act="sc">${ICON.cloud} Link do SoundCloud</button></div>
-  </div>`;
-}
-
-function trackRow(t, ctx, i) {
+function trackRow(t, ctx, i, rank) {
   const cur = currentTrack()?.id === t.id ? ' current' : '';
-  return `<div class="row${cur}" data-play="${ctx}" data-i="${i}">
-    ${coverHTML(t, 'md')}
-    <div class="meta"><div class="t">${esc(t.title)}</div><div class="a">${t.source === 'sc' ? '<span class="src">' + ICON.cloud + '</span>' : ''}${esc(t.artist)}</div></div>
-    <button class="icon-btn more" data-menu="${t.id}" data-ctx="${ctx}" aria-label="Opções">${ICON.more}</button>
+  return `<div class="row${cur}" data-play="${esc(ctx)}" data-i="${i}">
+    ${rank ? `<span class="rank">${i + 1}</span>` : ''}${coverHTML(t, 'md')}
+    <div class="meta"><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></div>
+    <button class="icon-btn more" data-menu="${t.id}" data-ctx="${esc(ctx)}" aria-label="Opções">${ICON.more}</button>
   </div>`;
 }
-function trackList(list, ctx) {
-  return `<div class="list">${list.map((t, i) => trackRow(t, ctx, i)).join('')}</div>`;
+function trackList(list, ctx, rank) {
+  return `<div class="list">${list.map((t, i) => trackRow(t, ctx, i, rank)).join('')}</div>`;
 }
 
 // Cada "contexto" sabe gerar sua lista de faixas, para tocar em sequência.
 function contextTracks(ctx) {
+  if (isRemote(ctx)) return state.lists.get(ctx) || [];
   const [kind, arg] = ctx.split(':');
-  if (kind === 'all') return [...state.tracks].sort(sortTitle);
-  if (kind === 'added') return [...state.tracks].sort((a, b) => b.added - a.added);
   if (kind === 'liked') return state.tracks.filter((t) => t.liked).sort((a, b) => (b.likedAt || 0) - (a.likedAt || 0));
-  if (kind === 'artist') return state.tracks.filter((t) => t.artist === decodeURIComponent(arg)).sort(sortTitle);
   if (kind === 'pl') { const p = state.playlists.find((x) => x.id === arg); return p ? p.trackIds.map(byId).filter(Boolean) : []; }
   if (kind === 'recent') return state.recents.map(byId).filter(Boolean);
+  if (kind === 'one') return [byId(decodeURIComponent(arg))].filter(Boolean);
   return [];
+}
+
+function genreTile(g) {
+  return `<button class="genre" data-go="genre:${encodeURIComponent(g.name)}" style="--h:${g.hue}"><span>${esc(g.name)}</span></button>`;
 }
 
 function renderHome() {
   const recent = contextTracks('recent').slice(0, 12);
-  const added = contextTracks('added').slice(0, 6);
+  const trend = contextTracks('trend');
   const quick = [
     { route: 'liked', label: 'Curtidas', cover: `<div class="cover md" style="background:linear-gradient(135deg,var(--accent),#7a2cff)">${ICON.heart}</div>` },
-    { route: 'all', label: 'Todas as músicas', cover: `<div class="cover md">${ICON.music}</div>` },
-    ...state.playlists.slice(0, 4).map((p) => {
-      const t = p.trackIds.map(byId).find(Boolean);
-      return { route: 'pl:' + p.id, label: p.name, cover: coverHTML(t, 'md', p.name) };
-    }),
+    ...state.playlists.slice(0, 5).map((p) => ({ route: 'pl:' + p.id, label: p.name, cover: coverHTML(p.trackIds.map(byId).find(Boolean), 'md', p.name) })),
   ];
   return `
     <div class="quick">${quick.map((q) => `<button data-go="${q.route}">${q.cover}<span class="t">${esc(q.label)}</span></button>`).join('')}</div>
+    <h2>Gêneros</h2>
+    <div class="shelf genres-shelf">${GENRES.slice(0, 8).map(genreTile).join('')}</div>
     ${recent.length ? `<h2>Tocadas recentemente</h2>
       <div class="shelf">${recent.map((t, i) => `<button class="tile" data-play="recent" data-i="${i}">${coverHTML(t, 'lg')}<div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></button>`).join('')}</div>` : ''}
-    <h2>Adicionadas recentemente</h2>
-    ${trackList(added, 'added')}`;
+    <h2 class="link" data-go="trend">Em alta esta semana <span>Ver tudo</span></h2>
+    ${listState('trend') || trackList(trend.slice(0, 10), 'trend', true)}`;
+}
+
+function renderSearch() {
+  return `<label class="search">${ICON.search}
+    <input id="q" type="search" placeholder="Músicas ou artistas" value="${esc(state.query)}" autocomplete="off" enterkeyhint="search"></label>
+    <div id="results"></div>`;
+}
+function bindSearch() {
+  const inp = $('#q'); let h;
+  inp.oninput = () => { clearTimeout(h); h = setTimeout(() => { state.query = inp.value.trim(); $('#results').innerHTML = renderResults(); }, 350); };
+  inp.onkeydown = (e) => { if (e.key === 'Enter') { inp.blur(); clearTimeout(h); state.query = inp.value.trim(); $('#results').innerHTML = renderResults(); } };
+}
+function renderResults() {
+  if (!state.query) return `<h2>Gêneros</h2><div class="genres">${GENRES.map(genreTile).join('')}</div>`;
+  const ctx = 'q:' + encodeURIComponent(state.query);
+  const r = contextTracks(ctx);
+  return listState(ctx) || (r.length ? trackList(r, ctx) : `<div class="empty"><p>Nada encontrado para “${esc(state.query)}”.</p></div>`);
 }
 
 function artistList() {
   const m = new Map();
-  for (const t of state.tracks) { const a = m.get(t.artist) || { name: t.artist, tracks: [] }; a.tracks.push(t); m.set(t.artist, a); }
+  for (const t of state.tracks.filter((x) => x.liked || state.playlists.some((p) => p.trackIds.includes(x.id)))) {
+    const a = m.get(t.artistId) || { id: t.artistId, name: t.artist, tracks: [] }; a.tracks.push(t); m.set(t.artistId, a);
+  }
   return [...m.values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
 }
+const artistRoute = (id, name) => `artist:${encodeURIComponent(id)}:${encodeURIComponent(name)}`;
 
 function renderLibrary() {
   const f = state.libFilter;
-  const chips = [['songs', 'Músicas'], ['playlists', 'Playlists'], ['artists', 'Artistas']]
+  const chips = [['songs', 'Curtidas'], ['playlists', 'Playlists'], ['artists', 'Artistas']]
     .map(([k, l]) => `<button class="chip${f === k ? ' on' : ''}" data-filter="${k}">${l}</button>`).join('');
   let body = '';
   if (f === 'songs') {
-    body = `<div style="display:flex;gap:10px;margin:14px 0 10px">
-      <button class="btn" data-shuffle="all">${ICON.shuffle} Aleatório</button>
-      <button class="btn ghost" data-act="add">${ICON.plus} Adicionar</button></div>
-      ${trackList(contextTracks('all'), 'all')}`;
-  } else if (f === 'playlists') {
     const liked = contextTracks('liked');
+    body = liked.length ? `<div style="display:flex;gap:10px;margin:14px 0 10px">
+      <button class="btn" data-play="liked" data-i="0">${ICON.play} Tocar</button>
+      <button class="btn ghost" data-shuffle="liked">${ICON.shuffle} Aleatório</button></div>
+      ${trackList(liked, 'liked')}` : `<div class="empty"><div class="big">${ICON.heart}</div><h3>Nenhuma curtida ainda</h3><p>Toque no coração de uma música para guardar ela aqui.</p><button class="btn" data-tab-go="search">${ICON.search} Pesquisar músicas</button></div>`;
+  } else if (f === 'playlists') {
     body = `<div class="list" style="margin-top:10px">
       <button class="row" data-act="new-playlist"><div class="cover md">${ICON.plus}</div><div class="meta"><div class="t">Nova playlist</div></div></button>
-      <button class="row" data-go="liked"><div class="cover md" style="background:linear-gradient(135deg,var(--accent),#7a2cff)">${ICON.heart}</div><div class="meta"><div class="t">Curtidas</div><div class="a">${liked.length} ${liked.length === 1 ? 'música' : 'músicas'}</div></div></button>
       ${state.playlists.map((p) => {
         const t = p.trackIds.map(byId).find(Boolean);
         return `<button class="row" data-go="pl:${p.id}">${coverHTML(t, 'md', p.name)}<div class="meta"><div class="t">${esc(p.name)}</div><div class="a">${p.trackIds.length} ${p.trackIds.length === 1 ? 'música' : 'músicas'}</div></div></button>`;
       }).join('')}</div>`;
   } else {
-    body = `<div class="list" style="margin-top:10px">${artistList().map((a) =>
-      `<button class="row" data-go="artist:${encodeURIComponent(a.name)}">${coverHTML(a.tracks[0], 'md', a.name)}<div class="meta"><div class="t">${esc(a.name)}</div><div class="a">${a.tracks.length} ${a.tracks.length === 1 ? 'música' : 'músicas'}</div></div></button>`).join('')}</div>`;
+    const artists = artistList();
+    body = artists.length ? `<div class="list" style="margin-top:10px">${artists.map((a) =>
+      `<button class="row" data-go="${artistRoute(a.id, a.name)}"><div class="cover md round" style="${coverStyle(a.tracks[0])}"></div><div class="meta"><div class="t">${esc(a.name)}</div><div class="a">${a.tracks.length} ${a.tracks.length === 1 ? 'música salva' : 'músicas salvas'}</div></div></button>`).join('')}</div>`
+      : `<div class="empty"><p>Os artistas das músicas que você curtir aparecem aqui.</p></div>`;
   }
   return `<div class="chips">${chips}</div>${body}`;
 }
 
 function renderCollection(route) {
-  const [kind, arg] = route.split(':');
+  const [kind, arg, arg2] = route.split(':');
   const list = contextTracks(route);
-  let title = '', sub = '', cover = '', extra = '';
-  if (kind === 'liked') { title = 'Curtidas'; cover = `<div class="cover" style="background:linear-gradient(135deg,var(--accent),#7a2cff)"><svg viewBox="0 0 24 24" style="width:64px;height:64px"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0112 7.3a4.3 4.3 0 017.5 2.5C19.5 15.4 12 20 12 20z" class="fill"/></svg></div>`; }
-  else if (kind === 'all') { title = 'Todas as músicas'; cover = `<div class="cover">${ICON.music.replace('<svg', '<svg style="width:64px;height:64px"')}</div>`; }
-  else if (kind === 'artist') { title = decodeURIComponent(arg); cover = `<div class="cover" style="border-radius:50%;${coverStyle(list[0])}">${urls.get(list[0]?.id) ? '' : esc(title.charAt(0).toUpperCase())}</div>`; }
+  let title = '', cover = '', extra = '', rank = false;
+  const big = (inner, style = '') => `<div class="cover" style="${style}">${inner}</div>`;
+  if (kind === 'liked') { title = 'Curtidas'; cover = big(ICON.heart.replace('<svg', '<svg style="width:64px;height:64px"').replace('<path', '<path class="fill"'), 'background:linear-gradient(135deg,var(--accent),#7a2cff)'); }
+  else if (kind === 'trend') { title = 'Em alta esta semana'; rank = true; cover = big('🔥', 'font-size:72px;background:linear-gradient(135deg,#ff6a3d,#ff2d6e)'); }
+  else if (kind === 'genre') { title = decodeURIComponent(arg); const g = GENRES.find((x) => x.name === title); cover = big(esc(title), `font-size:30px;background:linear-gradient(135deg,hsl(${g?.hue ?? 20} 75% 50%),hsl(${((g?.hue ?? 20) + 40) % 360} 70% 25%))`); }
+  else if (kind === 'artist') { title = decodeURIComponent(arg2 || ''); cover = `<div class="cover" style="border-radius:50%;${coverStyle(list[0] || state.tracks.find((t) => String(t.artistId) === decodeURIComponent(arg)))}"></div>`; }
   else if (kind === 'pl') {
     const p = state.playlists.find((x) => x.id === arg);
     if (!p) { state.route = null; return renderLibrary(); }
     title = p.name; cover = coverHTML(list[0], '', p.name);
     extra = `<button class="btn ghost" data-plmenu="${p.id}" aria-label="Opções da playlist">${ICON.more}</button>`;
   }
-  const total = list.reduce((s, t) => s + (t.duration || 0), 0);
-  sub = `${list.length} ${list.length === 1 ? 'música' : 'músicas'}${total >= 60 ? ' · ' + Math.round(total / 60) + ' min' : ''}`;
+  const pending = isRemote(route) ? listState(route) : null;
+  const sub = pending ? '' : `${list.length} ${list.length === 1 ? 'música' : 'músicas'}`;
   return `<button class="back" data-act="back">${ICON.chevron} Voltar</button>
     <div class="hero">${cover}<h3>${esc(title)}</h3><div class="a">${sub}</div>
-      <div class="actions">${list.length ? `<button class="btn" data-play="${route}" data-i="0">${ICON.play} Tocar</button>
-      <button class="btn ghost" data-shuffle="${route}">${ICON.shuffle} Aleatório</button>` : ''}${extra}</div></div>
-    ${list.length ? trackList(list, route) : `<div class="empty"><p>${kind === 'liked' ? 'Toque no coração de uma música para ela aparecer aqui.' : kind === 'pl' ? 'Adicione músicas pelo menu ••• de cada faixa.' : 'Nada por aqui ainda.'}</p></div>`}`;
+      <div class="actions">${list.length ? `<button class="btn" data-play="${esc(route)}" data-i="0">${ICON.play} Tocar</button>
+      <button class="btn ghost" data-shuffle="${esc(route)}">${ICON.shuffle} Aleatório</button>` : ''}${extra}</div></div>
+    ${pending || (list.length ? trackList(list, route, rank) : `<div class="empty"><p>${kind === 'liked' ? 'Toque no coração de uma música para ela aparecer aqui.' : kind === 'pl' ? 'Adicione músicas pelo menu ••• de cada faixa.' : 'Nada por aqui ainda.'}</p></div>`)}`;
 }
 
 // ---------- cliques (delegação) ----------
 document.addEventListener('click', (e) => {
-  const el = e.target.closest('[data-menu],[data-play],[data-go],[data-act],[data-filter],[data-shuffle],[data-plmenu],[data-opt]');
+  const el = e.target.closest('[data-menu],[data-play],[data-go],[data-act],[data-filter],[data-shuffle],[data-plmenu],[data-opt],[data-retry],[data-tab-go]');
   if (!el) return;
   const d = el.dataset;
   if (d.menu) { e.stopPropagation(); return trackMenu(d.menu, d.ctx); }
@@ -387,16 +286,14 @@ document.addEventListener('click', (e) => {
   if (d.play) return playContext(d.play, +d.i || 0);
   if (d.shuffle) return playContext(d.shuffle, -1, true);
   if (d.go) return go(d.go);
+  if (d.retry) { state.failed.delete(d.retry); return render(true); }
+  if (d.tabGo) return $(`.tabs [data-tab="${d.tabGo}"]`).click();
   if (d.filter) { state.libFilter = d.filter; return render(); }
   if (d.plmenu) return playlistMenu(d.plmenu);
-  if (d.act === 'import') return $('#file-input').click();
-  if (d.act === 'add') return addMenu();
-  if (d.act === 'sc') return scSheet();
   if (d.act === 'back') return back();
   if (d.act === 'new-playlist') return newPlaylist();
 });
 
-// ---------- reprodução ----------
 const currentTrack = () => byId(state.queue[state.order[state.idx]]);
 
 function shuffled(arr) { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
@@ -420,14 +317,13 @@ function playContext(ctx, i, forceShuffle) {
 
 async function start(autoplay = true) {
   const t = currentTrack(); if (!t) return;
-  let blob = null;
-  if (t.source !== 'sc') { blob = await DB.get('blobs', 'audio:' + t.id); if (!blob) return toast('Arquivo não encontrado'); }
   updateNowPlaying();
-  player.load(t, blob, autoplay).catch(() => toast('Não consegui tocar do SoundCloud agora'));
+  try { player.load(await Catalog.streamUrl(t), autoplay); } catch { return toast('Sem conexão com o catálogo'); }
+  keep(t);
   state.recents = [t.id, ...state.recents.filter((x) => x !== t.id)].slice(0, 30);
   DB.put('kv', state.recents, 'recents');
-  if (!state.route) render();
-  else document.querySelectorAll('.row.current').forEach((r) => r.classList.remove('current'));
+  document.querySelectorAll('.row').forEach((r) => r.classList.toggle('current', contextTracks(r.dataset.play || '')[+r.dataset.i]?.id === t.id));
+  if (t.hue == null && t.artUrl) hueFromImage(t.artUrl).then((h) => { t.hue = h ?? hashHue(t.artist + t.title); DB.put('tracks', t); if (currentTrack() === t) setAccent(t); });
 }
 
 function next(auto) {
@@ -451,7 +347,7 @@ player.on.ended = () => next(true);
 player.on.play = syncPlay;
 player.on.pause = syncPlay;
 player.on.time = syncTime;
-player.on.needTap = () => { openPlayer(); toast('Toque no play do SoundCloud'); };
+player.on.error = () => { toast('Essa música não está disponível agora'); setTimeout(() => next(false), 800); };
 
 function syncPlay() {
   const playing = !player.paused;
@@ -475,7 +371,7 @@ function syncControls() {
 }
 
 function setAccent(t) {
-  const hue = t?.hue ?? 16;
+  const hue = t?.hue ?? (t ? hashHue(t.artist + t.title) : 16);
   document.documentElement.style.setProperty('--accent', `hsl(${hue} 85% 60%)`);
   document.documentElement.style.setProperty('--accent-soft', `hsla(${hue} 85% 60% / .16)`);
 }
@@ -483,7 +379,9 @@ function setAccent(t) {
 function contextLabel(ctx) {
   const [k, a] = ctx.split(':');
   if (k === 'pl') return state.playlists.find((p) => p.id === a)?.name || 'Playlist';
-  return { all: 'Todas as músicas', added: 'Adicionadas recentemente', liked: 'Curtidas', artist: decodeURIComponent(a || ''), recent: 'Tocadas recentemente' }[k] || 'Tocando agora';
+  if (k === 'genre') return decodeURIComponent(a);
+  if (k === 'artist') return decodeURIComponent(ctx.split(':')[2] || '');
+  return { trend: 'Em alta', q: 'Pesquisa', liked: 'Curtidas', recent: 'Tocadas recentemente' }[k] || 'Tocando agora';
 }
 
 function updateNowPlaying() {
@@ -494,8 +392,6 @@ function updateNowPlaying() {
   $('#player-cover').outerHTML = coverHTML(t, 'xl').replace('<div class="cover xl"', '<div class="cover xl" id="player-cover"');
   $('#player-title').textContent = t.title; $('#player-artist').textContent = t.artist;
   $('#player-from').textContent = contextLabel(state.context);
-  const via = $('#player-via'); via.hidden = t.source !== 'sc'; via.href = t.url || '#';
-  via.innerHTML = `${ICON.cloud} ${t.preview ? 'Prévia de 30 s · ' : ''}Ouvir no SoundCloud`;
   syncLike(); setAccent(t); drawWave(0);
   if ('mediaSession' in navigator) {
     const url = urls.get(t.id);
@@ -572,7 +468,7 @@ $('#player-more').onclick = () => { const t = currentTrack(); if (t) trackMenu(t
 // Arrastar para baixo fecha o player
 (() => {
   let y0 = null; const p = $('#player');
-  p.addEventListener('touchstart', (e) => { if (e.target.closest('#wave, #sc-host')) return; y0 = e.touches[0].clientY; }, { passive: true });
+  p.addEventListener('touchstart', (e) => { if (e.target.closest('#wave')) return; y0 = e.touches[0].clientY; }, { passive: true });
   p.addEventListener('touchmove', (e) => {
     if (y0 == null) return; const dy = e.touches[0].clientY - y0;
     if (dy > 0) { p.style.transition = 'none'; p.style.transform = `translateY(${dy}px)`; }
@@ -590,7 +486,7 @@ function syncLike() {
 }
 async function toggleLike(t) {
   t.liked = !t.liked; t.likedAt = t.liked ? Date.now() : null;
-  await DB.put('tracks', t); syncLike();
+  keep(t); syncLike();
   toast(t.liked ? 'Adicionada às curtidas' : 'Removida das curtidas');
   if (!$('#player').classList.contains('open')) render();
 }
@@ -602,27 +498,31 @@ function showSheet(html, { locked } = {}) {
 function hideSheet(force) { if ($('#sheet').dataset.locked && !force) return; $('#sheet').classList.remove('open'); }
 $('#sheet').addEventListener('click', (e) => { if (e.target.id === 'sheet') hideSheet(); });
 
+
 function trackMenu(id, ctx, fromPlayer) {
   const t = byId(id); if (!t) return;
   const inPl = ctx?.startsWith('pl:') ? ctx.slice(3) : null;
-  showSheet(`<div class="sheet-head">${coverHTML(t, 'md')}<div class="meta"><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></div></div>
+  showSheet(`<div class="sheet-head">${coverHTML(t, 'md')}<div class="meta"><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}${t.genre ? ' · ' + esc(t.genre) : ''}</div></div></div>
     <button class="opt" data-opt="next">${ICON.next} Tocar a seguir</button>
     <button class="opt" data-opt="like">${ICON.heart} ${t.liked ? 'Remover das curtidas' : 'Curtir'}</button>
     <button class="opt" data-opt="add">${ICON.list} Adicionar à playlist</button>
-    ${fromPlayer ? '' : `<button class="opt" data-opt="artist">${ICON.music} Ver artista</button>`}
-    <button class="opt" data-opt="edit">${ICON.edit} Editar nome e artista</button>
-    ${inPl ? `<button class="opt" data-opt="unlist">${ICON.minus} Remover desta playlist</button>` : ''}
-    <button class="opt danger" data-opt="delete">${ICON.trash} Apagar do app</button>`);
+    ${t.artistId ? `<button class="opt" data-opt="artist">${ICON.user} Ver artista</button>` : ''}
+    ${inPl ? `<button class="opt danger" data-opt="unlist">${ICON.minus} Remover desta playlist</button>` : ''}`);
   $('#sheet-card').onclick = async (e) => {
     const o = e.target.closest('[data-opt]')?.dataset.opt; if (!o) return;
     if (o === 'next') { playNext(t); hideSheet(); }
     else if (o === 'like') { hideSheet(); toggleLike(t); }
     else if (o === 'add') addToPlaylist(t);
-    else if (o === 'artist') { hideSheet(); closePlayer(); go('artist:' + encodeURIComponent(t.artist)); }
-    else if (o === 'edit') editTrack(t);
+    else if (o === 'artist') { hideSheet(); closePlayer(); go(artistRoute(t.artistId, t.artist)); }
     else if (o === 'unlist') { const p = state.playlists.find((x) => x.id === inPl); p.trackIds = p.trackIds.filter((x) => x !== t.id); await DB.put('playlists', p); hideSheet(); render(); toast('Removida da playlist'); }
-    else if (o === 'delete') confirmDelete(t);
   };
+}
+
+function playNext(t) {
+  if (!currentTrack()) { state.queue = [t.id]; state.context = 'one:' + encodeURIComponent(t.id); buildOrder(0); start(); return; }
+  state.queue.push(t.id);
+  state.order.splice(state.idx + 1, 0, state.queue.length - 1);
+  toast('Toca em seguida');
 }
 
 function playNext(t) {
@@ -641,7 +541,7 @@ function addToPlaylist(t) {
     if (b.dataset.opt === 'new') return newPlaylist(t);
     const p = state.playlists.find((x) => x.id === b.dataset.id);
     if (p.trackIds.includes(t.id)) { hideSheet(); return toast('Já está nessa playlist'); }
-    p.trackIds.push(t.id); await DB.put('playlists', p); hideSheet(); toast(`Adicionada a ${p.name}`); render();
+    p.trackIds.push(t.id); keep(t); await DB.put('playlists', p); hideSheet(); toast(`Adicionada a ${p.name}`); render();
   };
 }
 
@@ -653,6 +553,7 @@ function newPlaylist(withTrack) {
   const create = async () => {
     const name = $('#pl-name').value.trim(); if (!name) return $('#pl-name').focus();
     const p = { id: uid(), name, trackIds: withTrack ? [withTrack.id] : [], created: Date.now() };
+    if (withTrack) keep(withTrack);
     await DB.put('playlists', p); state.playlists.push(p); hideSheet();
     toast(withTrack ? `Adicionada a ${name}` : 'Playlist criada');
     if (withTrack) render(); else go('pl:' + p.id);
@@ -686,39 +587,7 @@ function playlistMenu(id) {
   };
 }
 
-function editTrack(t) {
-  showSheet(`<div class="sheet-title">Editar informações</div>
-    <div style="padding:0 2px"><input class="field" id="ed-title" value="${esc(t.title)}" placeholder="Nome da música">
-    <input class="field" id="ed-artist" value="${esc(t.artist)}" placeholder="Artista"></div>
-    <div class="row-btns"><button class="btn ghost" data-opt="cancel">Cancelar</button><button class="btn" data-opt="ok">Salvar</button></div>`);
-  $('#sheet-card').onclick = async (e) => {
-    const o = e.target.closest('[data-opt]')?.dataset.opt;
-    if (o === 'cancel') hideSheet();
-    if (o === 'ok') {
-      t.title = $('#ed-title').value.trim() || t.title; t.artist = $('#ed-artist').value.trim() || t.artist;
-      await DB.put('tracks', t); hideSheet(); render();
-      if (currentTrack()?.id === t.id) updateNowPlaying();
-      toast('Informações salvas');
-    }
-  };
-}
 
-function confirmDelete(t) {
-  showSheet(`<div class="sheet-title">Apagar “${esc(t.title)}”?</div>
-    <div class="a" style="padding:0 10px 16px;white-space:normal">A música sai do app e de todas as playlists. O arquivo original no iPhone não é afetado.</div>
-    <div class="row-btns"><button class="btn ghost" data-opt="cancel">Cancelar</button><button class="btn" style="background:#e5484d" data-opt="ok">Apagar</button></div>`);
-  $('#sheet-card').onclick = async (e) => {
-    const o = e.target.closest('[data-opt]')?.dataset.opt;
-    if (o === 'cancel') return hideSheet();
-    if (o !== 'ok') return;
-    if (currentTrack()?.id === t.id) { player.stop(); state.queue = []; state.order = []; state.idx = -1; $('#mini').classList.add('hidden'); closePlayer(); }
-    await DB.del('tracks', t.id); await DB.del('blobs', 'audio:' + t.id); await DB.del('blobs', 'cover:' + t.id);
-    state.tracks = state.tracks.filter((x) => x.id !== t.id);
-    for (const p of state.playlists) if (p.trackIds.includes(t.id)) { p.trackIds = p.trackIds.filter((x) => x !== t.id); await DB.put('playlists', p); }
-    state.recents = state.recents.filter((x) => x !== t.id); DB.put('kv', state.recents, 'recents');
-    hideSheet(); render(); toast('Música apagada');
-  };
-}
 
 window.addEventListener('resize', () => syncTime());
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
