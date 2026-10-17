@@ -140,11 +140,13 @@ function go(route) { state.route = route; render(); window.scrollTo(0, 0); }
 function back() { state.route = null; render(); }
 
 const TITLES = { home: 'Início', search: 'Pesquisar', library: 'Biblioteca' };
+function greeting() { const h = new Date().getHours(); return h < 5 ? 'Boa madrugada' : h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite'; }
 
 // soft = recarregar só o conteúdo, sem perder o que está sendo digitado na busca
 function render(soft) {
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab));
-  $('#screen-title').textContent = state.route ? '' : TITLES[state.tab];
+  $('#screen-title').textContent = state.route ? '' : state.tab === 'home' ? greeting() : TITLES[state.tab];
+  document.body.dataset.view = state.route ? 'route' : state.tab;
   const v = $('#view');
   if (state.route) { v.innerHTML = renderCollection(state.route); return; }
   if (state.tab === 'search') {
@@ -163,8 +165,8 @@ function trackRow(t, ctx, i, rank) {
     <button class="icon-btn more" data-menu="${t.id}" data-ctx="${esc(ctx)}" aria-label="Opções">${ICON.more}</button>
   </div>`;
 }
-function trackList(list, ctx, rank) {
-  return `<div class="list">${list.map((t, i) => trackRow(t, ctx, i, rank)).join('')}</div>`;
+function trackList(list, ctx, rank, offset = 0) {
+  return `<div class="list">${list.map((t, i) => trackRow(t, ctx, i + offset, rank)).join('')}</div>`;
 }
 
 // Cada "contexto" sabe gerar sua lista de faixas, para tocar em sequência.
@@ -189,14 +191,22 @@ function renderHome() {
     { route: 'liked', label: 'Curtidas', cover: `<div class="cover md" style="background:linear-gradient(135deg,var(--accent),#7a2cff)">${ICON.heart}</div>` },
     ...state.playlists.slice(0, 5).map((p) => ({ route: 'pl:' + p.id, label: p.name, cover: coverHTML(p.trackIds.map(byId).find(Boolean), 'md', p.name) })),
   ];
+  const top = trend[0];
+  const hero = top ? `<div class="hero-card" data-play="trend" data-i="0">
+      <div class="hero-bg" style="${coverStyle(top)}"></div>
+      ${coverHTML(top, 'hero-art')}
+      <div class="hero-info"><div class="eyebrow">Destaque da semana</div><div class="t">${esc(top.title)}</div><div class="a">${esc(top.artist)}</div>
+        <span class="hero-play">${ICON.play}</span></div>
+    </div>` : '';
   return `
+    ${hero}
     <div class="quick">${quick.map((q) => `<button data-go="${q.route}">${q.cover}<span class="t">${esc(q.label)}</span></button>`).join('')}</div>
     <h2>Gêneros</h2>
     <div class="shelf genres-shelf">${GENRES.slice(0, 8).map(genreTile).join('')}</div>
     ${recent.length ? `<h2>Tocadas recentemente</h2>
-      <div class="shelf">${recent.map((t, i) => `<button class="tile" data-play="recent" data-i="${i}">${coverHTML(t, 'lg')}<div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></button>`).join('')}</div>` : ''}
+      <div class="shelf">${recent.map((t, i) => `<button class="tile" data-play="recent" data-i="${i}"><div class="tile-art">${coverHTML(t, 'lg')}<span class="tile-play">${ICON.play}</span></div><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></button>`).join('')}</div>` : ''}
     <h2 class="link" data-go="trend">Em alta esta semana <span>Ver tudo</span></h2>
-    ${listState('trend') || trackList(trend.slice(0, 10), 'trend', true)}`;
+    ${listState('trend') || trackList(trend.slice(1, 11), 'trend', true, 1)}`;
 }
 
 function renderSearch() {
@@ -322,6 +332,7 @@ async function start(autoplay = true) {
   keep(t);
   state.recents = [t.id, ...state.recents.filter((x) => x !== t.id)].slice(0, 30);
   DB.put('kv', state.recents, 'recents');
+  if (state.tab === 'home' && !state.route) render();
   document.querySelectorAll('.row').forEach((r) => r.classList.toggle('current', contextTracks(r.dataset.play || '')[+r.dataset.i]?.id === t.id));
   if (t.hue == null && t.artUrl) hueFromImage(t.artUrl).then((h) => { t.hue = h ?? hashHue(t.artist + t.title); DB.put('tracks', t); if (currentTrack() === t) setAccent(t); });
 }
