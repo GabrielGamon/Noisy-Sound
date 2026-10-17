@@ -250,3 +250,15 @@ h2:first-child { margin-top: 8px; }
 
 .progress-import { height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; margin: 8px 0 0; }
 .progress-import span { display: block; height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+
+/* SoundCloud */
+.a .src svg { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; }
+.via { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; margin-top: 10px; font-size: 13px; font-weight: 600; color: rgba(255,255,255,.6); text-decoration: none; }
+.via svg { width: 16px; height: 16px; }
+.via[hidden] { display: none; }
+.sc-host, .sc-meta { position: fixed; left: -9999px; bottom: 0; width: 320px; height: 166px; opacity: 0; pointer-events: none; }
+.sc-host iframe, .sc-meta iframe { width: 100%; height: 100%; border: 0; }
+.sc-tap-hint { display: none; font-size: 13px; color: rgba(255,255,255,.7); margin-top: 14px; }
+body.sc-tap .sc-tap-hint { display: block; }
+body.sc-tap .sc-host { position: static; width: 100%; height: 120px; opacity: 1; pointer-events: auto; margin-top: 8px; border-radius: 12px; overflow: hidden; }
+body.sc-tap .wave, body.sc-tap .times { display: none; }

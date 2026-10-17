@@ -1,6 +1,5 @@
 // Noisy Sound: app de música pessoal. Tudo roda no aparelho, sem servidor.
 const $ = (s, el = document) => el.querySelector(s);
-const audio = $('#audio');
 
 const ICON = {
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13a1 1 0 001.5.86l10.5-6.5a1 1 0 000-1.72L9.5 4.64A1 1 0 008 5.5z" class="fill"/></svg>',
@@ -16,13 +15,15 @@ const ICON = {
   trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
   minus: '<svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>',
   chevron: '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>',
+  cloud: '<svg viewBox="0 0 24 24"><path d="M7 18h10.5a4 4 0 00.6-7.95A6 6 0 006.4 9.2 4.5 4.5 0 007 18z"/></svg>',
+  file: '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5M10 17a2 2 0 100-4 2 2 0 000 4zM12 15V10l3 1"/></svg>',
 };
 
 const state = {
   tracks: [], playlists: [], recents: [],
   queue: [], order: [], idx: -1, context: '',
   shuffle: false, repeat: 'off',
-  tab: 'home', route: null, libFilter: 'songs', query: '',
+  tab: 'home', route: null, libFilter: 'songs',
 };
 const urls = new Map(); // id -> object URL da capa
 
@@ -62,6 +63,7 @@ async function load() {
   state.recents = (await DB.get('kv', 'recents')) || [];
   const s = (await DB.get('kv', 'settings')) || {};
   state.shuffle = !!s.shuffle; state.repeat = s.repeat || 'off';
+  for (const t of state.tracks) if (t.artUrl) urls.set(t.id, t.artUrl);
   await Promise.all(state.tracks.filter((t) => t.hasCover).map(async (t) => {
     const b = await DB.get('blobs', 'cover:' + t.id);
     if (b) urls.set(t.id, URL.createObjectURL(b));
@@ -72,7 +74,71 @@ async function load() {
 const saveSettings = () => DB.put('kv', { shuffle: state.shuffle, repeat: state.repeat }, 'settings');
 
 // ---------- importar músicas ----------
-$('#import-btn').onclick = () => $('#file-input').click();
+$('#import-btn').onclick = () => addMenu();
+
+function addMenu() {
+  showSheet(`<div class="sheet-title">Adicionar músicas</div>
+    <button class="opt" data-opt="files">${ICON.file} Arquivos do iPhone</button>
+    <button class="opt" data-opt="sc">${ICON.cloud} Link do SoundCloud</button>`);
+  $('#sheet-card').onclick = (e) => {
+    const o = e.target.closest('[data-opt]')?.dataset.opt;
+    if (o === 'files') { hideSheet(); $('#file-input').click(); }
+    if (o === 'sc') scSheet();
+  };
+}
+
+function scSheet() {
+  showSheet(`<div class="sheet-title">Adicionar do SoundCloud</div>
+    <div class="a" style="padding:0 10px;white-space:normal">No SoundCloud, toque em Compartilhar → Copiar link, numa música ou playlist, e cole aqui.</div>
+    <div style="padding:0 2px"><input class="field" id="sc-url" type="url" inputmode="url" placeholder="https://soundcloud.com/..." autocomplete="off" enterkeyhint="done"></div>
+    <div class="row-btns"><button class="btn ghost" data-opt="paste">Colar</button><button class="btn" data-opt="ok">Adicionar</button></div>`);
+  const go = () => { const u = $('#sc-url').value.trim(); if (u) addFromSoundCloud(u); else $('#sc-url').focus(); };
+  $('#sc-url').onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  $('#sheet-card').onclick = async (e) => {
+    const o = e.target.closest('[data-opt]')?.dataset.opt;
+    if (o === 'ok') go();
+    if (o === 'paste') { try { $('#sc-url').value = (await navigator.clipboard.readText()).trim(); } catch { $('#sc-url').focus(); } }
+  };
+}
+
+const SC_LINK = /^https?:\/\/((www\.|m\.)?soundcloud\.com|on\.soundcloud\.com|soundcloud\.app\.goo\.gl)\//i;
+async function addFromSoundCloud(raw) {
+  const url = (raw.match(/https?:\/\/\S+/) || [raw])[0].replace(/\?.*$/, '').replace('://m.soundcloud.com', '://soundcloud.com');
+  if (!SC_LINK.test(url)) return toast('Esse link não é do SoundCloud');
+  showSheet(`<div class="sheet-title">Buscando no SoundCloud…</div><div class="progress-import" style="margin:10px"><span style="width:35%"></span></div>`, { locked: true });
+  let sounds = [];
+  try { sounds = await scResolve(url); } catch (err) { console.error(err); }
+  if (!sounds.length) { hideSheet(true); return toast('Não consegui abrir esse link'); }
+  let added = 0;
+  for (const s of sounds) {
+    const link = s.permalink_url || url;
+    if (state.tracks.some((t) => t.url === link)) continue;
+    const t = {
+      id: uid(), source: 'sc', url: link, title: s.title, artist: s.user?.username || 'SoundCloud',
+      album: '', duration: (s.duration || 0) / 1000, peaks: null, added: Date.now() - added, liked: false,
+      artUrl: (s.artwork_url || s.user?.avatar_url || '').replace('-large.', '-t500x500.') || null,
+      preview: s.policy === 'SNIP', hasCover: false, hue: null,
+    };
+    if (t.artUrl) { urls.set(t.id, t.artUrl); t.hue = await hueFromImage(t.artUrl); }
+    if (t.hue == null) t.hue = hashHue(t.artist + t.title);
+    if (s.waveform_url) t.peaks = await scPeaks(s.waveform_url);
+    await DB.put('tracks', t); state.tracks.push(t); added++;
+  }
+  hideSheet(true);
+  toast(added ? (added === 1 ? '1 música adicionada' : `${added} músicas adicionadas`) : 'Essas músicas já estão no app');
+  render();
+}
+
+async function scPeaks(waveUrl) {
+  try {
+    const r = await fetch(waveUrl.replace(/\.png$/, '.json')); if (!r.ok) return null;
+    const { samples } = await r.json(); if (!samples?.length) return null;
+    const n = 120, step = samples.length / n, out = [];
+    for (let i = 0; i < n; i++) out.push(samples[Math.floor(i * step)]);
+    const max = Math.max(...out, 1);
+    return out.map((v) => +(v / max).toFixed(3));
+  } catch { return null; }
+}
 $('#file-input').onchange = async (e) => {
   const files = [...e.target.files]; e.target.value = '';
   if (files.length) importFiles(files);
@@ -112,13 +178,16 @@ async function peaksOf(file, n = 120) {
   } catch { return null; }
 }
 
-function hueFromImage(blob) {
+function hueFromImage(src) {
   return new Promise((resolve) => {
-    const img = new Image(); const u = URL.createObjectURL(blob);
+    const img = new Image(); const remote = typeof src === 'string';
+    const u = remote ? src : URL.createObjectURL(src);
+    if (remote) img.crossOrigin = 'anonymous';
+    setTimeout(() => resolve(null), 6000);
     img.onload = () => {
       const c = document.createElement('canvas'); c.width = c.height = 24;
       const g = c.getContext('2d'); g.drawImage(img, 0, 0, 24, 24);
-      const d = g.getImageData(0, 0, 24, 24).data;
+      let d; try { d = g.getImageData(0, 0, 24, 24).data; } catch { return resolve(null); }
       let best = null, bestScore = -1;
       for (let i = 0; i < d.length; i += 4) {
         const r = d[i] / 255, gg = d[i + 1] / 255, b = d[i + 2] / 255;
@@ -126,13 +195,13 @@ function hueFromImage(blob) {
         const score = sat * (1 - Math.abs(mx - .65));
         if (score > bestScore) { bestScore = score; best = [r, gg, b, mx, mn]; }
       }
-      URL.revokeObjectURL(u);
+      if (!remote) URL.revokeObjectURL(u);
       if (!best || bestScore < .08) return resolve(null);
       const [r, gg, b, mx, mn] = best; const dd = mx - mn; let h;
       if (mx === r) h = ((gg - b) / dd) % 6; else if (mx === gg) h = (b - r) / dd + 2; else h = (r - gg) / dd + 4;
       resolve(Math.round((h * 60 + 360) % 360));
     };
-    img.onerror = () => { URL.revokeObjectURL(u); resolve(null); };
+    img.onerror = () => { if (!remote) URL.revokeObjectURL(u); resolve(null); };
     img.src = u;
   });
 }
@@ -189,26 +258,25 @@ document.querySelectorAll('.tabs button').forEach((b) => {
 function go(route) { state.route = route; render(); window.scrollTo(0, 0); }
 function back() { state.route = null; render(); }
 
-const TITLES = { home: 'Início', search: 'Buscar', library: 'Biblioteca' };
+const TITLES = { home: 'Início', library: 'Biblioteca' };
 
 function render() {
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.tab === state.tab));
   $('#screen-title').textContent = state.route ? '' : TITLES[state.tab];
   const v = $('#view');
   if (state.route) v.innerHTML = renderCollection(state.route);
-  else if (!state.tracks.length && state.tab !== 'search') v.innerHTML = renderEmpty();
-  else v.innerHTML = { home: renderHome, search: renderSearch, library: renderLibrary }[state.tab]();
-  if (state.tab === 'search' && !state.route) {
-    const inp = $('#q'); inp.oninput = () => { state.query = inp.value; $('#results').innerHTML = renderResults(); };
-  }
+  else if (!state.tracks.length) v.innerHTML = renderEmpty();
+  else v.innerHTML = { home: renderHome, library: renderLibrary }[state.tab]();
 }
 
 function renderEmpty() {
   return `<div class="empty">
     <div class="big">${ICON.music}</div>
     <h3>Sua biblioteca está vazia</h3>
-    <p>Adicione arquivos de música do iPhone ou do iCloud Drive. Eles ficam guardados aqui e tocam mesmo sem internet.</p>
-    <button class="btn" data-act="import">${ICON.plus} Adicionar músicas</button>
+    <p>Adicione arquivos do iPhone ou do iCloud Drive, ou cole links de músicas e playlists do SoundCloud.</p>
+    <div style="display:flex;flex-direction:column;gap:10px;align-items:center">
+      <button class="btn" data-act="import">${ICON.file} Arquivos do iPhone</button>
+      <button class="btn ghost" data-act="sc">${ICON.cloud} Link do SoundCloud</button></div>
   </div>`;
 }
 
@@ -216,7 +284,7 @@ function trackRow(t, ctx, i) {
   const cur = currentTrack()?.id === t.id ? ' current' : '';
   return `<div class="row${cur}" data-play="${ctx}" data-i="${i}">
     ${coverHTML(t, 'md')}
-    <div class="meta"><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></div>
+    <div class="meta"><div class="t">${esc(t.title)}</div><div class="a">${t.source === 'sc' ? '<span class="src">' + ICON.cloud + '</span>' : ''}${esc(t.artist)}</div></div>
     <button class="icon-btn more" data-menu="${t.id}" data-ctx="${ctx}" aria-label="Opções">${ICON.more}</button>
   </div>`;
 }
@@ -232,7 +300,6 @@ function contextTracks(ctx) {
   if (kind === 'liked') return state.tracks.filter((t) => t.liked).sort((a, b) => (b.likedAt || 0) - (a.likedAt || 0));
   if (kind === 'artist') return state.tracks.filter((t) => t.artist === decodeURIComponent(arg)).sort(sortTitle);
   if (kind === 'pl') { const p = state.playlists.find((x) => x.id === arg); return p ? p.trackIds.map(byId).filter(Boolean) : []; }
-  if (kind === 'search') return searchTracks(state.query);
   if (kind === 'recent') return state.recents.map(byId).filter(Boolean);
   return [];
 }
@@ -256,28 +323,6 @@ function renderHome() {
     ${trackList(added, 'added')}`;
 }
 
-function searchTracks(q) {
-  q = q.trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
-  if (!q) return [];
-  const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
-  return state.tracks.filter((t) => norm(t.title).includes(q) || norm(t.artist).includes(q) || norm(t.album).includes(q)).sort(sortTitle);
-}
-function renderSearch() {
-  return `<label class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
-    <input id="q" type="search" placeholder="Músicas, artistas ou álbuns" value="${esc(state.query)}" autocomplete="off" enterkeyhint="search"></label>
-    <div id="results">${renderResults()}</div>`;
-}
-function renderResults() {
-  if (!state.query.trim()) {
-    const artists = artistList().slice(0, 12);
-    if (!artists.length) return `<div class="empty"><p>Adicione músicas para buscar entre elas.</p></div>`;
-    return `<h2>Artistas</h2><div class="chips">${artists.map((a) => `<button class="chip" data-go="artist:${encodeURIComponent(a.name)}">${esc(a.name)}</button>`).join('')}</div>`;
-  }
-  const r = searchTracks(state.query);
-  if (!r.length) return `<div class="empty"><p>Nada encontrado para “${esc(state.query)}”.</p></div>`;
-  return `<h2>Músicas</h2>${trackList(r, 'search')}`;
-}
-
 function artistList() {
   const m = new Map();
   for (const t of state.tracks) { const a = m.get(t.artist) || { name: t.artist, tracks: [] }; a.tracks.push(t); m.set(t.artist, a); }
@@ -292,7 +337,7 @@ function renderLibrary() {
   if (f === 'songs') {
     body = `<div style="display:flex;gap:10px;margin:14px 0 10px">
       <button class="btn" data-shuffle="all">${ICON.shuffle} Aleatório</button>
-      <button class="btn ghost" data-act="import">${ICON.plus} Adicionar</button></div>
+      <button class="btn ghost" data-act="add">${ICON.plus} Adicionar</button></div>
       ${trackList(contextTracks('all'), 'all')}`;
   } else if (f === 'playlists') {
     const liked = contextTracks('liked');
@@ -345,6 +390,8 @@ document.addEventListener('click', (e) => {
   if (d.filter) { state.libFilter = d.filter; return render(); }
   if (d.plmenu) return playlistMenu(d.plmenu);
   if (d.act === 'import') return $('#file-input').click();
+  if (d.act === 'add') return addMenu();
+  if (d.act === 'sc') return scSheet();
   if (d.act === 'back') return back();
   if (d.act === 'new-playlist') return newPlaylist();
 });
@@ -371,54 +418,50 @@ function playContext(ctx, i, forceShuffle) {
   start();
 }
 
-let currentUrl = null;
 async function start(autoplay = true) {
   const t = currentTrack(); if (!t) return;
-  const blob = await DB.get('blobs', 'audio:' + t.id);
-  if (!blob) return toast('Arquivo não encontrado');
-  if (currentUrl) URL.revokeObjectURL(currentUrl);
-  currentUrl = URL.createObjectURL(blob);
-  audio.src = currentUrl;
-  if (autoplay) audio.play().catch(() => {});
+  let blob = null;
+  if (t.source !== 'sc') { blob = await DB.get('blobs', 'audio:' + t.id); if (!blob) return toast('Arquivo não encontrado'); }
+  updateNowPlaying();
+  player.load(t, blob, autoplay).catch(() => toast('Não consegui tocar do SoundCloud agora'));
   state.recents = [t.id, ...state.recents.filter((x) => x !== t.id)].slice(0, 30);
   DB.put('kv', state.recents, 'recents');
-  updateNowPlaying();
-  if (!state.route && state.tab !== 'search') render();
+  if (!state.route) render();
   else document.querySelectorAll('.row.current').forEach((r) => r.classList.remove('current'));
 }
 
 function next(auto) {
   if (!state.order.length) return;
-  if (auto && state.repeat === 'one') { audio.currentTime = 0; audio.play(); return; }
+  if (auto && state.repeat === 'one') { player.currentTime = 0; player.play(); return; }
   if (state.idx < state.order.length - 1) state.idx++;
   else if (state.repeat === 'all' || !auto) { state.idx = 0; if (state.shuffle) buildOrder(state.order[0]); }
-  else { audio.pause(); audio.currentTime = 0; return; }
+  else { player.pause(); player.currentTime = 0; return; }
   start();
 }
 function prev() {
-  if (audio.currentTime > 3 || state.idx === 0) { audio.currentTime = 0; return; }
+  if (player.currentTime > 3 || state.idx === 0) { player.currentTime = 0; return; }
   state.idx--; start();
 }
 function togglePlay() {
   if (!currentTrack()) return;
-  if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+  if (player.paused) player.play(); else player.pause();
 }
 
-audio.addEventListener('ended', () => next(true));
-audio.addEventListener('play', syncPlay);
-audio.addEventListener('pause', syncPlay);
-audio.addEventListener('timeupdate', syncTime);
-audio.addEventListener('loadedmetadata', syncTime);
+player.on.ended = () => next(true);
+player.on.play = syncPlay;
+player.on.pause = syncPlay;
+player.on.time = syncTime;
+player.on.needTap = () => { openPlayer(); toast('Toque no play do SoundCloud'); };
 
 function syncPlay() {
-  const playing = !audio.paused;
+  const playing = !player.paused;
   $('#mini-play').innerHTML = playing ? ICON.pause : ICON.play;
   $('#btn-play').innerHTML = playing ? ICON.pause : ICON.play;
   $('#player').classList.toggle('playing', playing);
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
 }
 function syncTime() {
-  const d = audio.duration || currentTrack()?.duration || 0, c = audio.currentTime || 0;
+  const d = player.duration || currentTrack()?.duration || 0, c = player.currentTime || 0;
   $('#mini-bar').style.width = d ? (c / d) * 100 + '%' : '0';
   $('#t-cur').textContent = fmt(c); $('#t-dur').textContent = '-' + fmt(Math.max(0, d - c));
   drawWave(d ? c / d : 0);
@@ -440,7 +483,7 @@ function setAccent(t) {
 function contextLabel(ctx) {
   const [k, a] = ctx.split(':');
   if (k === 'pl') return state.playlists.find((p) => p.id === a)?.name || 'Playlist';
-  return { all: 'Todas as músicas', added: 'Adicionadas recentemente', liked: 'Curtidas', artist: decodeURIComponent(a || ''), search: 'Busca', recent: 'Tocadas recentemente' }[k] || 'Tocando agora';
+  return { all: 'Todas as músicas', added: 'Adicionadas recentemente', liked: 'Curtidas', artist: decodeURIComponent(a || ''), recent: 'Tocadas recentemente' }[k] || 'Tocando agora';
 }
 
 function updateNowPlaying() {
@@ -451,6 +494,8 @@ function updateNowPlaying() {
   $('#player-cover').outerHTML = coverHTML(t, 'xl').replace('<div class="cover xl"', '<div class="cover xl" id="player-cover"');
   $('#player-title').textContent = t.title; $('#player-artist').textContent = t.artist;
   $('#player-from').textContent = contextLabel(state.context);
+  const via = $('#player-via'); via.hidden = t.source !== 'sc'; via.href = t.url || '#';
+  via.innerHTML = `${ICON.cloud} ${t.preview ? 'Prévia de 30 s · ' : ''}Ouvir no SoundCloud`;
   syncLike(); setAccent(t); drawWave(0);
   if ('mediaSession' in navigator) {
     const url = urls.get(t.id);
@@ -464,9 +509,9 @@ function updateNowPlaying() {
 if ('mediaSession' in navigator) {
   const ms = navigator.mediaSession;
   const h = (a, fn) => { try { ms.setActionHandler(a, fn); } catch {} };
-  h('play', () => audio.play()); h('pause', () => audio.pause());
+  h('play', () => player.play()); h('pause', () => player.pause());
   h('previoustrack', prev); h('nexttrack', () => next(false));
-  h('seekto', (e) => { audio.currentTime = e.seekTime; });
+  h('seekto', (e) => { player.currentTime = e.seekTime; });
 }
 
 // ---------- forma de onda ----------
@@ -496,7 +541,7 @@ function fakePeaks(seed) {
 let seeking = false;
 function seekFrom(e) {
   const r = $('#wave').getBoundingClientRect(); const p = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-  const d = audio.duration || 0; if (d) { audio.currentTime = p * d; drawWave(p); }
+  const d = player.duration || 0; if (d) { player.currentTime = p * d; drawWave(p); }
 }
 $('#wave').addEventListener('pointerdown', (e) => { seeking = true; $('#wave').setPointerCapture(e.pointerId); seekFrom(e); });
 $('#wave').addEventListener('pointermove', (e) => seeking && seekFrom(e));
@@ -527,7 +572,7 @@ $('#player-more').onclick = () => { const t = currentTrack(); if (t) trackMenu(t
 // Arrastar para baixo fecha o player
 (() => {
   let y0 = null; const p = $('#player');
-  p.addEventListener('touchstart', (e) => { if (e.target.closest('#wave')) return; y0 = e.touches[0].clientY; }, { passive: true });
+  p.addEventListener('touchstart', (e) => { if (e.target.closest('#wave, #sc-host')) return; y0 = e.touches[0].clientY; }, { passive: true });
   p.addEventListener('touchmove', (e) => {
     if (y0 == null) return; const dy = e.touches[0].clientY - y0;
     if (dy > 0) { p.style.transition = 'none'; p.style.transform = `translateY(${dy}px)`; }
@@ -666,7 +711,7 @@ function confirmDelete(t) {
     const o = e.target.closest('[data-opt]')?.dataset.opt;
     if (o === 'cancel') return hideSheet();
     if (o !== 'ok') return;
-    if (currentTrack()?.id === t.id) { audio.pause(); audio.removeAttribute('src'); state.queue = []; state.order = []; state.idx = -1; $('#mini').classList.add('hidden'); closePlayer(); }
+    if (currentTrack()?.id === t.id) { player.stop(); state.queue = []; state.order = []; state.idx = -1; $('#mini').classList.add('hidden'); closePlayer(); }
     await DB.del('tracks', t.id); await DB.del('blobs', 'audio:' + t.id); await DB.del('blobs', 'cover:' + t.id);
     state.tracks = state.tracks.filter((x) => x.id !== t.id);
     for (const p of state.playlists) if (p.trackIds.includes(t.id)) { p.trackIds = p.trackIds.filter((x) => x !== t.id); await DB.put('playlists', p); }

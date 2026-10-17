@@ -1,6 +1,6 @@
 // Guarda o app em cache para abrir sem internet.
-const CACHE = 'noisy-sound-v1';
-const FILES = ['./', 'index.html', 'style.css', 'db.js', 'tags.js', 'app.js', 'manifest.webmanifest',
+const CACHE = 'noisy-sound-v2';
+const FILES = ['./', 'index.html', 'style.css', 'db.js', 'player.js', 'tags.js', 'app.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', (e) => {
