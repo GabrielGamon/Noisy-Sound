@@ -21,7 +21,7 @@ const ICON = {
 
 const state = {
   tracks: [], playlists: [], recents: [],
-  lists: new Map(), loading: new Set(), failed: new Set(), query: '',
+  lists: new Map(), loading: new Set(), failed: new Set(), query: '', history: [],
   queue: [], order: [], idx: -1, context: '',
   shuffle: false, repeat: 'off',
   tab: 'home', route: null, libFilter: 'songs',
@@ -67,6 +67,7 @@ async function load() {
   remember(state.tracks);
   state.playlists = ((await DB.all('playlists')) || []).sort((a, b) => a.created - b.created);
   state.recents = ((await DB.get('kv', 'recents')) || []).filter((id) => cache.has(id));
+  state.history = (await DB.get('kv', 'history')) || [];
   const s = (await DB.get('kv', 'settings')) || {};
   state.shuffle = !!s.shuffle; state.repeat = s.repeat || 'off';
   navigator.storage?.persist?.();
@@ -76,13 +77,16 @@ const saveSettings = () => DB.put('kv', { shuffle: state.shuffle, repeat: state.
 
 // ---------- listas que vêm do catálogo ----------
 // Contextos remotos: "trend", "genre:<nome>", "q:<texto>", "artist:<id>:<nome>"
-const isRemote = (ctx) => /^(trend|genre|q|artist):?/.test(ctx);
+const isRemote = (ctx) => /^(trend|genre|q|artist|for|like):?/.test(ctx);
+const likeRoute = (h) => ['like', h.artistId, h.artist, h.genre || ''].map(encodeURIComponent).join(':').replace(/^like/, 'like');
 function fetchList(ctx) {
   const [kind, ...rest] = ctx.split(':'); const arg = decodeURIComponent(rest[0] || '');
   if (kind === 'trend') return Catalog.trending(null, 50);
   if (kind === 'genre') { const g = GENRES.find((x) => x.name === arg); return g?.genre ? Catalog.trending(g.genre, 50) : Catalog.search(g?.q || arg, 50); }
   if (kind === 'q') return Catalog.search(arg, 40);
   if (kind === 'artist') return Catalog.artistTracks(arg, 50);
+  if (kind === 'for') return Recs.mix(40);
+  if (kind === 'like') return Recs.similar(arg, decodeURIComponent(rest[2] || ''), 30);
   return Promise.resolve([]);
 }
 async function ensureList(ctx) {
@@ -201,12 +205,28 @@ function renderHome() {
   return `
     ${hero}
     <div class="quick">${quick.map((q) => `<button data-go="${q.route}">${q.cover}<span class="t">${esc(q.label)}</span></button>`).join('')}</div>
+    ${recShelves()}
     <h2>Gêneros</h2>
     <div class="shelf genres-shelf">${GENRES.slice(0, 8).map(genreTile).join('')}</div>
     ${recent.length ? `<h2>Tocadas recentemente</h2>
       <div class="shelf">${recent.map((t, i) => `<button class="tile" data-play="recent" data-i="${i}"><div class="tile-art">${coverHTML(t, 'lg')}<span class="tile-play">${ICON.play}</span></div><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></button>`).join('')}</div>` : ''}
     <h2 class="link" data-go="trend">Em alta esta semana <span>Ver tudo</span></h2>
     ${listState('trend') || trackList(trend.slice(1, 11), 'trend', true, 1)}`;
+}
+
+function tileShelf(ctx, list) {
+  return `<div class="shelf">${list.map((t, i) => `<button class="tile" data-play="${esc(ctx)}" data-i="${i}"><div class="tile-art">${coverHTML(t, 'lg')}<span class="tile-play">${ICON.play}</span></div><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}</div></button>`).join('')}</div>`;
+}
+function recShelves() {
+  if (!state.history.length) return '';
+  const part = (ctx, title, sub) => {
+    const list = contextTracks(ctx);
+    const pending = listState(ctx);
+    if (!pending && !list.length) return '';
+    return `<h2 class="link" data-go="${esc(ctx)}"><span class="h-wrap">${sub ? `<small>${esc(sub)}</small>` : ''}${esc(title)}</span><span>Ver tudo</span></h2>${pending || tileShelf(ctx, list.slice(0, 12))}`;
+  };
+  return part('for:you', 'Feito para você', 'Com base no que você ouve') +
+    Recs.recentArtists(2).map((h) => part(likeRoute(h), h.artist, 'Porque você ouviu')).join('');
 }
 
 function renderSearch() {
@@ -268,6 +288,8 @@ function renderCollection(route) {
   let title = '', cover = '', extra = '', rank = false;
   const big = (inner, style = '') => `<div class="cover" style="${style}">${inner}</div>`;
   if (kind === 'liked') { title = 'Curtidas'; cover = big(ICON.heart.replace('<svg', '<svg style="width:64px;height:64px"').replace('<path', '<path class="fill"'), 'background:linear-gradient(135deg,var(--accent),#7a2cff)'); }
+  else if (kind === 'for') { title = 'Feito para você'; cover = big('✨', 'font-size:72px;background:linear-gradient(135deg,var(--accent),#3d5afe)'); }
+  else if (kind === 'like') { title = 'Parecidas com ' + decodeURIComponent(arg2 || ''); cover = big('🎧', 'font-size:72px;background:linear-gradient(135deg,#7a2cff,var(--accent))'); }
   else if (kind === 'trend') { title = 'Em alta esta semana'; rank = true; cover = big('🔥', 'font-size:72px;background:linear-gradient(135deg,#ff6a3d,#ff2d6e)'); }
   else if (kind === 'genre') { title = decodeURIComponent(arg); const g = GENRES.find((x) => x.name === title); cover = big(esc(title), `font-size:30px;background:linear-gradient(135deg,hsl(${g?.hue ?? 20} 75% 50%),hsl(${((g?.hue ?? 20) + 40) % 360} 70% 25%))`); }
   else if (kind === 'artist') { title = decodeURIComponent(arg2 || ''); cover = `<div class="cover" style="border-radius:50%;${coverStyle(list[0] || state.tracks.find((t) => String(t.artistId) === decodeURIComponent(arg)))}"></div>`; }
@@ -332,6 +354,10 @@ async function start(autoplay = true) {
   keep(t);
   state.recents = [t.id, ...state.recents.filter((x) => x !== t.id)].slice(0, 30);
   DB.put('kv', state.recents, 'recents');
+  state.history = [...state.history, { id: t.id, artistId: t.artistId, artist: t.artist, genre: t.genre, at: Date.now() }].slice(-300);
+  DB.put('kv', state.history, 'history');
+  // A cada 4 músicas, o "Feito para você" é refeito com o gosto atualizado.
+  if (state.history.length % 4 === 0 && state.context !== 'for:you') state.lists.delete('for:you');
   if (state.tab === 'home' && !state.route) render();
   document.querySelectorAll('.row').forEach((r) => r.classList.toggle('current', contextTracks(r.dataset.play || '')[+r.dataset.i]?.id === t.id));
   if (t.hue == null && t.artUrl) hueFromImage(t.artUrl).then((h) => { t.hue = h ?? hashHue(t.artist + t.title); DB.put('tracks', t); if (currentTrack() === t) setAccent(t); });
@@ -341,8 +367,22 @@ function next(auto) {
   if (!state.order.length) return;
   if (auto && state.repeat === 'one') { player.currentTime = 0; player.play(); return; }
   if (state.idx < state.order.length - 1) state.idx++;
-  else if (state.repeat === 'all' || !auto) { state.idx = 0; if (state.shuffle) buildOrder(state.order[0]); }
-  else { player.pause(); player.currentTime = 0; return; }
+  else if (state.repeat === 'all') { state.idx = 0; if (state.shuffle) buildOrder(state.order[0]); }
+  else return keepGoing();
+  start();
+}
+
+// Quando a fila acaba, continua tocando músicas parecidas com a última.
+async function keepGoing() {
+  const t = currentTrack(); if (!t) return;
+  let more = [];
+  try { more = remember(await Recs.similar(t.artistId, t.genre, 20)).filter((x) => !state.queue.includes(x.id)); } catch {}
+  if (!more.length) { player.pause(); player.currentTime = 0; return; }
+  const start0 = state.queue.length;
+  state.queue.push(...more.map((x) => x.id));
+  state.order.push(...more.map((_, i) => start0 + i));
+  state.idx++;
+  toast('Tocando músicas parecidas');
   start();
 }
 function prev() {
@@ -392,6 +432,8 @@ function contextLabel(ctx) {
   if (k === 'pl') return state.playlists.find((p) => p.id === a)?.name || 'Playlist';
   if (k === 'genre') return decodeURIComponent(a);
   if (k === 'artist') return decodeURIComponent(ctx.split(':')[2] || '');
+  if (k === 'like') return 'Parecidas com ' + decodeURIComponent(ctx.split(':')[2] || '');
+  if (k === 'for') return 'Feito para você';
   return { trend: 'Em alta', q: 'Pesquisa', liked: 'Curtidas', recent: 'Tocadas recentemente' }[k] || 'Tocando agora';
 }
 

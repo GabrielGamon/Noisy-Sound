@@ -33,7 +33,7 @@ const Catalog = (() => {
     return {
       id: 'au:' + t.id, rid: t.id, source: 'audius',
       title: t.title, artist: t.user?.name || t.user?.handle || 'Artista',
-      artistId: t.user?.id, album: '', genre: t.genre || '', duration: t.duration || 0,
+      artistId: t.user?.id, album: '', genre: t.genre || '', mood: t.mood || '', duration: t.duration || 0,
       artUrl: art['480x480'] || art['1000x1000'] || art['150x150'] || null,
       plays: t.play_count || 0,
     };
@@ -44,6 +44,7 @@ const Catalog = (() => {
     trending: async (genre, limit = 40) => clean(await get('/tracks/trending', { limit, time: 'week', ...(genre ? { genre } : {}) })),
     search: async (query, limit = 40) => clean(await get('/tracks/search', { query, limit })),
     artistTracks: async (userId, limit = 40) => clean(await get(`/users/${userId}/tracks`, { limit, sort: 'plays' })),
+    relatedArtists: async (userId, limit = 8) => { try { return await get(`/users/${userId}/related`, { limit }); } catch { return []; } },
     streamUrl: async (t) => `${await base()}/v1/tracks/${t.rid}/stream?app_name=${APP}`,
   };
 })();

@@ -377,3 +377,8 @@ h2 { font-size: 21px; font-weight: 720; letter-spacing: -.02em; margin: 34px 0 1
 
 .hero .cover { width: min(220px, 60vw); height: min(220px, 60vw); }
 .top { position: relative; }
+
+h2 .h-wrap { display: flex; flex-direction: column; min-width: 0; }
+h2 .h-wrap small { font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+h2.link { align-items: flex-end; }
+h2.link .h-wrap { font-size: inherit; font-weight: inherit; color: var(--text); }
