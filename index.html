@@ -53,15 +53,15 @@
   <div class="player-inner">
     <div class="player-head">
       <button class="icon-btn" id="player-close" aria-label="Fechar"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
-      <span class="player-from" id="player-from">Tocando agora</span>
+      <div class="player-from"><small>Tocando de</small><span id="player-from">Tocando agora</span></div>
       <button class="icon-btn" id="player-more" aria-label="Opções"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" class="fill"/><circle cx="12" cy="12" r="1.4" class="fill"/><circle cx="19" cy="12" r="1.4" class="fill"/></svg></button>
     </div>
-    <div class="player-labels">
-      <span class="lbl lbl-t" id="player-title"></span>
-      <span class="lbl lbl-a" id="player-artist"></span>
+    <div class="player-stage"><div class="player-cover" id="player-cover"></div></div>
+    <div class="player-meta">
+      <div class="pm-text"><div class="pm-title" id="player-title"></div><div class="pm-artist" id="player-artist"></div></div>
     </div>
-    <div class="player-space"></div>
-    <div class="wave" id="wave"><canvas id="wave-canvas"></canvas><span class="wave-time cur" id="t-cur">0:00</span><span class="wave-time dur" id="t-dur">0:00</span></div>
+    <div class="seek" id="wave"><div class="seek-track"><span class="seek-fill"></span><span class="seek-knob"></span></div>
+      <div class="seek-times"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div></div>
     <div class="controls">
       <button class="icon-btn" id="btn-shuffle" aria-label="Aleatório"><svg viewBox="0 0 24 24"><path d="M3 7h3c4 0 6 10 10 10h4M3 17h3c1.6 0 2.8-1.6 3.9-3.5M14 9.5C15 8 16 7 18 7h2M17 4l3 3-3 3M17 14l3 3-3 3"/></svg></button>
       <button class="icon-btn" id="btn-prev" aria-label="Anterior"><svg viewBox="0 0 24 24"><path d="M18 5.5L8.5 12l9.5 6.5z" class="fill"/><rect x="5.1" y="5" width="2.4" height="14" rx="1.2" class="fill"/></svg></button>

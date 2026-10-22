@@ -521,7 +521,8 @@ function updateNowPlaying() {
   $('#mini').classList.remove('hidden');
   $('#mini-cover').outerHTML = coverHTML(t, 'sm').replace('<div class="cover sm"', '<div class="cover sm" id="mini-cover"');
   $('#mini-title').textContent = t.title; $('#mini-artist').textContent = t.artist;
-  $('#player-art').setAttribute('style', coverStyle(t)); $('#player-art').textContent = urls.get(t.id) ? '' : t.title.charAt(0).toUpperCase();
+  $('#player-art').setAttribute('style', coverStyle(t));
+  $('#player-cover').setAttribute('style', coverStyle(t)); $('#player-cover').textContent = urls.get(t.id) ? '' : t.title.charAt(0).toUpperCase();
   $('#player-title').textContent = t.title; $('#player-artist').textContent = t.artist;
   $('#player-add').innerHTML = `${ICON.list}<span>Playlist</span>`;
   $('#player-artist-btn').innerHTML = `${ICON.radio}<span>Parecidas</span>`;
@@ -544,30 +545,8 @@ if ('mediaSession' in navigator) {
   h('seekto', (e) => { player.currentTime = e.seekTime; });
 }
 
-// ---------- forma de onda ----------
-const canvas = $('#wave-canvas');
-// Forma de onda no estilo SoundCloud: barras finas, parte tocada na cor do app e um reflexo embaixo.
-function drawWave(p) {
-  if (!$('#player').classList.contains('open')) return;
-  const t = currentTrack(); const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = canvas.clientHeight; if (!w) return;
-  if (canvas.width !== Math.round(w * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
-  const g = canvas.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
-  const step = 3, bw = 2, bars = Math.floor(w / step), base = Math.round(h * 0.7);
-  const src = t?.peaks || fakePeaks(t?.id || 'x');
-  const cs = getComputedStyle(document.documentElement);
-  const a1 = cs.getPropertyValue('--accent').trim(), a2 = cs.getPropertyValue('--accent-2').trim() || a1;
-  const played = g.createLinearGradient(0, 0, 0, base); played.addColorStop(0, a2); played.addColorStop(1, a1);
-  for (let i = 0; i < bars; i++) {
-    const v = src[Math.floor((i / bars) * src.length)] ?? 0.3;
-    const up = Math.max(2, Math.pow(v, 0.85) * (base - 4));
-    const on = i / bars < p;
-    g.fillStyle = on ? played : 'rgba(255,255,255,.85)';
-    g.fillRect(i * step, base - up, bw, up);
-    g.fillStyle = on ? a1 : 'rgba(255,255,255,.85)';
-    g.globalAlpha = .35; g.fillRect(i * step, base + 1, bw, up * 0.42); g.globalAlpha = 1;
-  }
-}
+// ---------- barra de progresso ----------
+function drawWave(p) { $('#wave').style.setProperty('--p', (Math.min(1, Math.max(0, p)) * 100).toFixed(2) + '%'); }
 function fakePeaks(seed) {
   let s = hashHue(seed) + 1; const out = [];
   for (let i = 0; i < 120; i++) { s = (s * 9301 + 49297) % 233280; out.push(.25 + (s / 233280) * .6 * Math.sin((i / 120) * Math.PI + .3)); }
@@ -610,7 +589,7 @@ $('#player-artist-btn').onclick = () => { const t = currentTrack(); if (t) { clo
 // Arrastar para baixo fecha o player
 (() => {
   let y0 = null; const p = $('#player');
-  p.addEventListener('touchstart', (e) => { if (e.target.closest('#wave')) return; y0 = e.touches[0].clientY; }, { passive: true });
+  p.addEventListener('touchstart', (e) => { if (e.target.closest('#wave, .player-actions')) return; y0 = e.touches[0].clientY; }, { passive: true });
   p.addEventListener('touchmove', (e) => {
     if (y0 == null) return; const dy = e.touches[0].clientY - y0;
     if (dy > 0) { p.style.transition = 'none'; p.style.transform = `translateY(${dy}px)`; }
